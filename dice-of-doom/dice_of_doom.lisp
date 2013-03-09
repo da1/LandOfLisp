@@ -1,11 +1,12 @@
-;; 15.3 ダイス・オブ・ドゥーム
-;; バージョン1
+;; 18.2 ダイスオブドゥーム、バージョン2
+(load "lazy.lisp")
 
 (defparameter *num-players* 2)
 (defparameter *max-dice* 3)
-(defparameter *board-size* 3)
+(defparameter *board-size* 5)
 (defparameter *board-hexnum*
   (* *board-size* *board-size*))
+(defparameter *ai-level* 4)
 
 ;; リストで表現されたゲーム盤を配列表現へと変える
 (defun board-array (lst)
@@ -52,12 +53,13 @@
 (defun add-passing-move (board player spare-dice first-move moves)
   (if first-move
     moves
-    (cons (list nil
-                (game-tree (add-new-dice board player (1- spare-dice))
-                           (mod (1+ player) *num-players*)
-                           0
-                           t))
-          moves)))
+    (lazy-cons (list nil
+                     (game-tree (add-new-dice board player
+                                              (1- spare-dice))
+                                (mod (1+ player) *num-players*)
+                                0
+                                t))
+               moves)))
 
 ;; 攻撃の手を計算する
 ;; 可能な攻撃の指し手をゲーム木に追加する関数
@@ -67,20 +69,29 @@
                    (car (aref board pos)))
            (dice (pos)
                  (cadr (aref board pos))))
-    (mapcan (lambda (src)
-              (when (eq (player src) cur-player)
-                (mapcan (lambda (dst)
-                          (when (and (not (eq (player dst) cur-player))
-                                     (> (dice src) (dice dst)))
-                            (list
-                              (list (list src dst)
-                                    (game-tree (board-attack board cur-player
-                                                             src dst (dice src))
-                                               cur-player
-                                               (+ spare-dice (dice dst))
-                                               nil)))))
-                        (neighbors src))))
-            (loop for n below *board-hexnum* collect n))))
+    (lazy-mapcan
+      (lambda (src)
+        (if (eq (player src) cur-player)
+          (lazy-mapcan
+            (lambda (dst)
+              (if (and (not (eq (player dst)
+                                cur-player))
+                       (> (dice src) (dice dst)))
+                (make-lazy
+                  (list (list (list src dst)
+                              (game-tree (board-attack board
+                                                       cur-player
+                                                       src
+                                                       dst
+                                                       (dice src))
+                                         cur-player
+                                         (+ spare-dice (dice dst))
+                                         nil))))
+                (lazy-nil)))
+            (make-lazy (neighbors src)))
+          (lazy-nil)))
+      (make-lazy (loop for n below *board-hexnum*
+                       collect n)))))
 
 ;; 隣接したマスを見つける
 (defun neighbors (pos)
@@ -133,8 +144,8 @@
   (cadr tree))
 
 (defun play-vs-human (tree)
-  (print-info  tree)
-  (if (available-action tree)
+  (print-info tree)
+  (if (not (lazy-null (caddr tree)))
     (play-vs-human (handle-human tree))
     (announce-winner (current-board tree))))
 
@@ -150,16 +161,20 @@
   (fresh-line)
   (princ "choose your move:")
   (let ((moves (available-action tree)))
-    (loop for move in moves
-          for n from 1
-          do (let ((action (car move)))
-               (fresh-line)
-               (format t "~a. " n)
-               (if action
-                 (format t "~a -> ~a" (car action) (cadr action))
-                 (princ "end turn"))))
+    (labels ((print-moves
+               (moves n)
+               (unless (lazy-null moves)
+                 (let* ((move (lazy-car moves))
+                        (action (car move)))
+                   (fresh-line)
+                   (format t "~a. " n)
+                   (if action
+                     (format t "~a -> ~a" (car action) (cadr action))
+                     (princ "end turn")))
+                 (print-moves (lazy-cdr moves) (1+ n)))))
+      (print-moves moves 1))
     (fresh-line)
-    (cadr (nth (1- (read)) moves))))
+    (cadr (lazy-nth (1- (read)) moves))))
 
 (defun winners (board)
   (let* ((tally (loop for hex across board
@@ -187,15 +202,12 @@
 ;; ミニマックスアルゴリズム
 (defun rate-position (tree player)
   (let ((moves (available-action tree)))
-    (if moves
+    (if (not (lazy-null moves))
       (apply (if (eq (current-player tree) player)
                #'max
                #'min)
              (get-ratings tree player))
-      (let ((w (winners (current-board tree))))
-        (if (member player w)
-          (/ 1 (length w))
-          0)))))
+      (score-board (current-board tree) player))))
 
 ;; rate-position関数をメモ化する
 (let ((old-rate-position (symbol-function 'rate-position))
@@ -209,20 +221,94 @@
                 (funcall old-rate-position tree player))))))
 
 (defun get-ratings (tree player)
-  (mapcar (lambda (move)
-            (rate-position (cadr move) player))
-          (available-action tree)))
+  (take-all (lazy-mapcar (lambda (move)
+                           (rate-position (cadr move) player))
+          (available-action tree))))
+
+;;αβ法による最適化
+(defun ab-get-ratings-max (tree player upper-limit lower-limit)
+  (labels ((f (moves lower-limit)
+              (unless (lazy-null moves)
+                (let ((x (ab-rate-position (cadr (lazy-car moves))
+                                           player
+                                           upper-limit
+                                           lower-limit)))
+                  (if (>= x upper-limit)
+                    (list x)
+                    (cons x (f (lazy-cdr moves) (max x lower-limit))))))))
+    (f (available-action tree) lower-limit)))
+
+(defun ab-get-ratings-min (tree player upper-limit lower-limit)
+  (labels ((f (moves upper-limit)
+              (unless (lazy-null moves)
+                (let ((x (ab-rate-position (cadr (lazy-car moves))
+                                           player
+                                           upper-limit
+                                           lower-limit)))
+                  (if (<= x lower-limit)
+                    (list x)
+                    (cons x (f (lazy-cdr moves) (min x upper-limit))))))))
+    (f (available-action tree) upper-limit)))
+
+(defun ab-rate-position (tree player upper-limit lower-limit)
+  (let ((moves (available-action tree)))
+    (if (not (lazy-null moves))
+      (if (eq (current-player tree) player)
+        (apply #'max (ab-get-ratings-max  tree
+                                          player
+                                          upper-limit
+                                          lower-limit))
+        (apply #'min (ab-get-ratings-min tree
+                                         player
+                                         upper-limit
+                                         lower-limit)))
+      (score-board (current-board tree) player))))
 
 ;; AIプレイヤーを使うゲームループ
-(defun handle-comupter (tree)
-  (let ((ratings (get-ratings tree (current-player tree))))
-    (cadr (nth (position (apply #'max ratings) ratings) (available-action tree)))))
+(defun handle-computer (tree)
+  (let ((ratings (ab-get-ratings-max (limit-tree-depth tree *ai-level*)
+                                     (car tree)
+                                     most-positive-fixnum
+                                     most-negative-fixnum)))
+    (cadr (lazy-nth (position (apply #'max ratings) ratings)
+                    (available-action tree)))))
 
 (defun play-vs-computer (tree)
   (print-info tree)
-  (cond ((null (available-action tree)) (announce-winner (current-board tree)))
+  (cond ((lazy-null (available-action tree)) (announce-winner (current-board tree)))
         ((zerop (current-player tree)) (play-vs-computer (handle-human tree)))
-        (t (play-vs-computer (handle-comupter tree)))))
+        (t (play-vs-computer (handle-computer tree)))))
+
+;; ゲーム木の刈り込み
+(defun limit-tree-depth (tree depth)
+  (list (car tree)
+        (cadr tree)
+        (if (zerop depth)
+          (lazy-nil)
+          (lazy-mapcar (lambda (move)
+                         (list (car move)
+                               (limit-tree-depth (cadr move) (1- depth))))
+                       (available-action tree)))))
+
+(defun score-board (board player)
+  (loop for hex across board
+        for pos from 0
+        sum (if (eq (car hex) player)
+              (if (threatened pos board)
+                1
+                2)
+              -1)))
+
+(defun threatened (pos board)
+  (let* ((hex (aref board pos))
+         (player (car hex))
+         (dice (cadr hex)))
+    (loop for n in (neighbors pos)
+          do (let* ((nhex (aref board n))
+                    (nplayer (car nhex))
+                    (ndice (cadr nhex)))
+               (when (and (not (eq player nplayer)) (> ndice dice))
+                 (return t))))))
 
 (play-vs-computer (game-tree (gen-board) 0 0 t))
-
+;(play-vs-human (game-tree (gen-board) 0 0 t))
