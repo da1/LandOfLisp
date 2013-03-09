@@ -113,19 +113,22 @@
 (defun available-action (tree)
   (caddr tree))
 
+(defun current-board (tree)
+  (cadr tree))
+
 (defun play-vs-human (tree)
   (print-info  tree)
   (if (available-action tree)
     (play-vs-human (handle-human tree))
-    (announce-winner (cadr tree))))
+    (announce-winner (current-board tree))))
 
 (defun current-player (tree)
-  (player-letter (car tree)))
+  (car tree))
 
 (defun print-info (tree)
   (fresh-line)
-  (format t "current player = ~a" (current-player tree))
-  (draw-board (cadr tree)))
+  (format t "current player = ~a" (player-letter (current-player tree)))
+  (draw-board (current-board tree)))
 
 (defun handle-human (tree)
   (fresh-line)
@@ -162,4 +165,37 @@
         (format t "The winner is ~a" (player-letter (car w))))))
 
 ;;(print (gen-board))
-(play-vs-human (game-tree (gen-board) 0 0 t))
+;; (play-vs-human (game-tree (gen-board) 0 0 t))
+
+;; 15.4 コンピュータによる対戦相手を作る
+;; ミニマックスアルゴリズム
+(defun rate-position (tree player)
+  (let ((moves (available-action tree)))
+    (if moves
+      (apply (if (eq (current-player tree) player)
+               #'max
+               #'min)
+             (get-ratings tree player))
+      (let ((w (winners (current-board tree))))
+        (if (member player w)
+          (/ 1 (length w))
+          0)))))
+
+(defun get-ratings (tree player)
+  (mapcar (lambda (move)
+            (rate-position (cadr move) player))
+          (available-action tree)))
+
+;; AIプレイヤーを使うゲームループ
+(defun handle-comupter (tree)
+  (let ((ratings (get-ratings tree (current-player tree))))
+    (cadr (nth (position (apply #'max ratings) ratings) (available-action tree)))))
+
+(defun play-vs-computer (tree)
+  (print-info tree)
+  (cond ((null (available-action tree)) (announce-winner (current-board tree)))
+        ((zerop (current-player tree)) (play-vs-computer (handle-human tree)))
+        (t (play-vs-computer (handle-comupter tree)))))
+
+(play-vs-computer (game-tree (gen-board) 0 0 t))
+
