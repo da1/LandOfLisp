@@ -10,7 +10,7 @@
 (defparameter *dice-scale* 40)
 (defparameter *dot-size* 0.05)
 
-(defparameter *die-colors* '((255 63 63) (63 63 255)))
+(defparameter *die-colors* '((255 63 63) (63 63 255) (63 255 255) (255 63 255)))
 
 ;; サイコロを描く
 ;; ビットマップ貼り付けなどという安直な方法は使わない
@@ -130,10 +130,12 @@
         ((eq pos *from-tile*) (setf *from-tile* nil)
                               (princ "Move cancelled."))
         (t (setf *cur-game-tree*
-                 (cadr (lazy-find-if (lambda (move)
-                                       (equal (car move)
-                                              (list *from-tile* pos)))
-                                     (available-action *cur-game-tree*))))
+                 (pick-chance-branch
+                   (current-board *cur-game-tree*)
+                   (lazy-find-if (lambda (move)
+                                   (equal (car move)
+                                          (list *from-tile* pos)))
+                                 (available-action *cur-game-tree*))))
            (setf *from-tile* nil)
            (princ "You may now ")
            (tag a (href (make-game-link 'pass))
